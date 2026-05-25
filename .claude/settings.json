@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test *)",
+      "Skill(opsx:propose)",
+      "Skill(opsx:propose:*)",
+      "Bash(dir \"C:/Users/p.dipersio/Documents/Progetti/MAGNUS-API/api/src/terminals\")",
+      "Bash(dir \"C:/Users/p.dipersio/Documents/Progetti/MAGNUS-API/api/src/terminals/dto\")",
+      "Bash(Get-Content \"openspec/changes/add-app-configuration/tasks.md\")",
+      "Bash(Select-String -Pattern \"\\\\- \\\\[ \\\\]\")",
+      "Bash(Measure-Object -Line)",
+      "Bash(Select-Object -ExpandProperty Lines)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s.split\\('\\\\n'\\).filter\\(l=>!l.includes\\('Warning'\\)&&!l.includes\\('trace-warnings'\\)\\).join\\('\\\\n'\\)\\);console.log\\('OUTPUT_PATH:',j.outputPath\\);console.log\\('DEPS:',JSON.stringify\\(j.dependencies\\)\\);console.log\\('---TEMPLATE---'\\);console.log\\(j.template\\);console.log\\('---INSTRUCTION---'\\);console.log\\(j.instruction\\);console.log\\('---RULES---'\\);console.log\\(JSON.stringify\\(j.rules,null,2\\)\\);}\\)\")"
+    ]
+  }
+}

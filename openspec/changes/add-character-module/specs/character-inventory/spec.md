@@ -1,0 +1,55 @@
+## ADDED Requirements
+
+### Requirement: Patch inventory items
+The system SHALL expose `PATCH /campaigns/:cid/characters/:id/inventory` performing id-based diffing on the four item arrays. Each array is patched independently via an `{ items, deletedIds }` block; arrays omitted from the body are left untouched.
+
+The body MAY contain any of `weapons`, `equip`, `consumables`, `other`, each shaped as:
+- `items`: an item with `id` updates the matching item (unknown id silently skipped); an item without `id` is created and the server assigns a nanoid short string id
+- `deletedIds`: array of ids to remove from that array
+
+Item shapes:
+- `weapons` / `equip`: `name` (required), `tags` array (optional), `broken` boolean (optional)
+- `consumables` / `other`: `name` (required), `description` (optional), `quantity` number ≥ 0
+
+Each tag object SHALL have `name` (string, required), `type` (enum: core | extra, required), and `damaged` (boolean, optional, default false).
+
+Item ids SHALL be unique across all four arrays. Inventory is **player-writable** (owner) and admin — owners have full create/update/delete.
+
+#### Scenario: Owner adds an item
+- **WHEN** the owner PATCHes `{ "weapons": { "items": [ { "name": "10mm Pistol" } ] } }`
+- **THEN** a weapon SHALL be created with a server-assigned `id` and HTTP 200 returned with the updated `inventory` object
+
+#### Scenario: Owner updates an item
+- **WHEN** the owner PATCHes `{ "weapons": { "items": [ { "id": "a1b2", "broken": true } ] } }` for an existing item id
+- **THEN** that item SHALL be merged and HTTP 200 returned
+
+#### Scenario: Owner removes an item
+- **WHEN** the owner PATCHes `{ "weapons": { "deletedIds": ["c3d4"] } }`
+- **THEN** the matching weapon SHALL be removed and HTTP 200 returned
+
+#### Scenario: Untouched arrays are preserved
+- **WHEN** the body contains only a `weapons` block
+- **THEN** `equip`, `consumables`, and `other` SHALL be unchanged
+
+#### Scenario: Unknown item id is skipped
+- **WHEN** an item references an `id` not present in that array
+- **THEN** that item SHALL be silently ignored (no error) and HTTP 200 returned
+
+#### Scenario: Negative quantity
+- **WHEN** a created or updated consumable or other item has `quantity` below 0
+- **THEN** the system SHALL return HTTP 400
+
+#### Scenario: Invalid tag type
+- **WHEN** a tag has a `type` not in `['core', 'extra']`
+- **THEN** the system SHALL return HTTP 400
+
+#### Scenario: Created item missing name
+- **WHEN** an id-less item omits the `name` field
+- **THEN** the system SHALL return HTTP 400
+
+### Requirement: Inventory endpoint enforces ownership
+`PATCH /campaigns/:cid/characters/:id/inventory` SHALL enforce the same ownership rules as all other character endpoints: players may only patch their own characters; admins may patch any character in the campaign.
+
+#### Scenario: Non-owner player calls inventory endpoint
+- **WHEN** a player PATCHes the inventory of a character they do not own
+- **THEN** the system SHALL return HTTP 404
