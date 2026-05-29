@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import { Campaign, CampaignSchema } from '../campaigns/schemas/campaign.schema';
 
 @Module({
   imports: [
@@ -18,7 +19,10 @@ import { User, UserSchema } from '../users/schemas/user.schema';
         signOptions: { expiresIn: '24h' },
       }),
     }),
-    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: Campaign.name, schema: CampaignSchema },
+    ]),
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

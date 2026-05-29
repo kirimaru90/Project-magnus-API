@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { TerminalsModule } from './terminals/terminals.module';
+import { CharactersModule } from './characters/characters.module';
 import { HealthModule } from './health/health.module';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 
@@ -22,6 +23,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     UsersModule,
     CampaignsModule,
     TerminalsModule,
+    CharactersModule,
     HealthModule,
   ],
 })

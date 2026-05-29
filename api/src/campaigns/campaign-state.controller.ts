@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { StateService } from '../state/state.service';
 import { MutateStateDto } from '../state/dto/mutation.dto';
@@ -20,6 +28,7 @@ export class CampaignStateController {
   }
 
   @Post(':id/state/mutate')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, CampaignAccessGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mutate campaign global state' })
@@ -28,6 +37,7 @@ export class CampaignStateController {
   }
 
   @Post(':id/state/reset')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -38,6 +48,7 @@ export class CampaignStateController {
   }
 
   @Post(':id/state/:key/reset')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Reset single campaign state variable (admin)' })

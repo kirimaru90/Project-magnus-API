@@ -100,8 +100,24 @@ Authenticated session inspection.
 **Response 200**
 
 ```json
-{ "id": "65f…", "username": "alice", "role": "player" }
+{
+  "id": "65f…",
+  "username": "alice",
+  "role": "player",
+  "lastCampaignId": "65f…",
+  "unlockedHiddenIds": { "65f…": ["vault-101", "back-door"] }
+}
 ```
+
+- `lastCampaignId` — string id of the campaign the user most recently entered a terminal
+  in, or `null`. Updated by `GET /terminals/:id/load` and
+  `GET /campaigns/:id/terminals/by-hidden-id/:hiddenId` on success.
+  **Lazy self-heal:** if the referenced campaign no longer exists, the server sets the
+  field to `null` before responding (and persists the change).
+- `unlockedHiddenIds` — plain object keyed by campaign id, values are arrays of
+  `hiddenId` slugs the player has unlocked via the by-hidden-id route. Empty map
+  serializes as `{}`. Never `null`. Admin callers will always see `{}` here (admins do
+  not accumulate unlocks). This field is **not** mutated by this endpoint.
 
 **Response 401** — missing, invalid, expired, or tampered token. The Terminal MUST treat
 401 here as "session ended": clear the stored token and fall back to the unauthenticated

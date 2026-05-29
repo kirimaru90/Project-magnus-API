@@ -33,7 +33,7 @@ describe('StateModule (e2e)', () => {
   let campaignId: string;
 
   const baseContent = {
-    meta: { title: 'Test Terminal', id: 'test-1', public: true },
+    meta: { title: 'Test Terminal', public: true },
     state: {
       local: {
         counter: { type: 'number', default: 0 },

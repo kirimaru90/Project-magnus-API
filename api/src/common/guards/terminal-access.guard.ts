@@ -14,6 +14,7 @@ import {
   Campaign,
   CampaignDocument,
 } from '../../campaigns/schemas/campaign.schema';
+import { User, UserDocument } from '../../users/schemas/user.schema';
 import { AuthenticatedUser } from '../../auth/jwt.strategy';
 
 @Injectable()
@@ -21,6 +22,7 @@ export class TerminalAccessGuard implements CanActivate {
   constructor(
     @InjectModel(Terminal.name) private terminalModel: Model<TerminalDocument>,
     @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -42,15 +44,47 @@ export class TerminalAccessGuard implements CanActivate {
 
     const user = req.user;
 
-    if (user?.role === 'admin') return true;
-    if (campaign.isActive && campaign.isPublic) return true;
-    if (user?.role === 'player' && campaign.isActive) {
-      const isMember = campaign.players.some(
-        (pid) => pid.toString() === user.id,
-      );
-      if (isMember) return true;
+    // Campaign-level access check
+    if (user?.role !== 'admin') {
+      if (!campaign.isActive) throw new NotFoundException();
+      if (!campaign.isPublic) {
+        if (user?.role !== 'player') throw new NotFoundException();
+        const isMember = campaign.players.some(
+          (pid) => pid.toString() === user.id,
+        );
+        if (!isMember) throw new NotFoundException();
+      }
     }
 
-    throw new NotFoundException();
+    // Admin passes all further checks
+    if (user?.role === 'admin') return true;
+
+    // Privacy check: non-public terminals require an unlock
+    const meta = terminal.content?.meta as Record<string, unknown> | undefined;
+    const isPublic = meta?.public === true;
+    if (isPublic) return true;
+
+    // Non-public terminal — player must have the hiddenId unlocked
+    if (!user) throw new NotFoundException();
+    const hiddenId = meta?.hiddenId;
+    if (typeof hiddenId !== 'string' || !hiddenId)
+      throw new NotFoundException();
+
+    const userDoc = await this.userModel
+      .findById(user.id)
+      .select('unlockedHiddenIds')
+      .lean();
+    if (!userDoc) throw new NotFoundException();
+
+    const campaignId = String(terminal.campaignId);
+    const unlocks: string[] =
+      userDoc.unlockedHiddenIds instanceof Map
+        ? (userDoc.unlockedHiddenIds.get(campaignId) ?? [])
+        : ((userDoc.unlockedHiddenIds as unknown as Record<string, string[]>)?.[
+            campaignId
+          ] ?? []);
+
+    if (!unlocks.includes(hiddenId)) throw new NotFoundException();
+    return true;
   }
 }

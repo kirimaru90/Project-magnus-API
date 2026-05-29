@@ -10,7 +10,14 @@
       "Bash(Select-String -Pattern \"\\\\- \\\\[ \\\\]\")",
       "Bash(Measure-Object -Line)",
       "Bash(Select-Object -ExpandProperty Lines)",
-      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s.split\\('\\\\n'\\).filter\\(l=>!l.includes\\('Warning'\\)&&!l.includes\\('trace-warnings'\\)\\).join\\('\\\\n'\\)\\);console.log\\('OUTPUT_PATH:',j.outputPath\\);console.log\\('DEPS:',JSON.stringify\\(j.dependencies\\)\\);console.log\\('---TEMPLATE---'\\);console.log\\(j.template\\);console.log\\('---INSTRUCTION---'\\);console.log\\(j.instruction\\);console.log\\('---RULES---'\\);console.log\\(JSON.stringify\\(j.rules,null,2\\)\\);}\\)\")"
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s.split\\('\\\\n'\\).filter\\(l=>!l.includes\\('Warning'\\)&&!l.includes\\('trace-warnings'\\)\\).join\\('\\\\n'\\)\\);console.log\\('OUTPUT_PATH:',j.outputPath\\);console.log\\('DEPS:',JSON.stringify\\(j.dependencies\\)\\);console.log\\('---TEMPLATE---'\\);console.log\\(j.template\\);console.log\\('---INSTRUCTION---'\\);console.log\\(j.instruction\\);console.log\\('---RULES---'\\);console.log\\(JSON.stringify\\(j.rules,null,2\\)\\);}\\)\")",
+      "Bash(node -e \"const p=require\\('c:/Users/p.dipersio/Documents/Progetti/MAGNUS-API/api/package.json'\\); console.log\\('nanoid:', p.dependencies.nanoid\\)\")",
+      "PowerShell($r = Test-NetConnection -ComputerName localhost -Port 27017 -WarningAction SilentlyContinue; \"Mongo 27017 reachable: $\\($r.TcpTestSucceeded\\)\")",
+      "Bash(dir /b)",
+      "Bash(git -c core.quotepath=false status)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\p.dipersio\\\\Documents\\\\Progetti\\\\MAGNUS-API\\\\api\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(xargs grep -l \"state\")"
     ]
   }
 }

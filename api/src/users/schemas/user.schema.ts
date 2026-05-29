@@ -19,6 +19,12 @@ export class User {
   @Prop({ type: Object, default: {} })
   configuration: Record<string, unknown>;
 
+  @Prop({ type: String, default: null })
+  lastCampaignId: string | null;
+
+  @Prop({ type: Map, of: [String], default: {} })
+  unlockedHiddenIds: Map<string, string[]>;
+
   @Prop()
   createdAt: Date;
 }

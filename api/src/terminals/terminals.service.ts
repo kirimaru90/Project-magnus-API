@@ -17,6 +17,7 @@ import {
   CampaignDocument,
 } from '../campaigns/schemas/campaign.schema';
 import { StateEntry } from '../campaigns/schemas/campaign.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { TerminalContentDto, StateVarDto } from './dto/terminal-content.dto';
 import { AuthenticatedUser } from '../auth/jwt.strategy';
 
@@ -75,6 +76,7 @@ export class TerminalsService {
     @InjectModel(FictionalUser.name)
     private fictionalUserModel: Model<FictionalUserDocument>,
     @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly configService: ConfigService,
   ) {}
 
@@ -259,13 +261,52 @@ export class TerminalsService {
     const terminal = await this.terminalModel.findByIdAndDelete(id).lean();
     if (!terminal) throw new NotFoundException();
     await this.fictionalUserModel.deleteMany({ terminalId: terminal._id });
+    const hiddenId = (
+      terminal.content?.meta as Record<string, unknown> | undefined
+    )?.hiddenId;
+    if (typeof hiddenId === 'string' && hiddenId) {
+      const campaignId = String(terminal.campaignId);
+      await this.userModel.updateMany(
+        {},
+        { $pull: { [`unlockedHiddenIds.${campaignId}`]: hiddenId } },
+      );
+    }
   }
 
-  async listByCampaign(campaignId: string) {
+  async listByCampaign(campaignId: string, actor?: AuthenticatedUser) {
     const terminals = await this.terminalModel
       .find({ campaignId: new Types.ObjectId(campaignId) })
       .lean();
-    return terminals.map((t) => this.toSummary(t));
+
+    if (actor?.role === 'admin') {
+      return terminals.map((t) => this.toSummary(t));
+    }
+
+    let unlockedSet = new Set<string>();
+    if (actor?.role === 'player') {
+      const userDoc = await this.userModel
+        .findById(actor.id)
+        .select('unlockedHiddenIds')
+        .lean();
+      if (userDoc) {
+        const unlocks: string[] =
+          userDoc.unlockedHiddenIds instanceof Map
+            ? (userDoc.unlockedHiddenIds.get(campaignId) ?? [])
+            : ((
+                userDoc.unlockedHiddenIds as unknown as Record<string, string[]>
+              )?.[campaignId] ?? []);
+        unlockedSet = new Set(unlocks);
+      }
+    }
+
+    return terminals
+      .filter((t) => {
+        const meta = t.content?.meta as Record<string, unknown> | undefined;
+        if (meta?.public === true) return true;
+        const hiddenId = meta?.hiddenId;
+        return typeof hiddenId === 'string' && unlockedSet.has(hiddenId);
+      })
+      .map((t) => this.toSummary(t));
   }
 
   async detail(id: string, actor?: AuthenticatedUser) {
@@ -312,6 +353,13 @@ export class TerminalsService {
     if (this.shouldCountView(actor))
       await this.incrementViewCount(terminal._id);
 
+    if (actor) {
+      await this.userModel.updateOne(
+        { _id: actor.id },
+        { $set: { lastCampaignId: String(terminal.campaignId) } },
+      );
+    }
+
     return {
       content: withInjectedMetaId(stripContent(terminal.content), terminal._id),
       localState: stateToFlat(
@@ -336,7 +384,17 @@ export class TerminalsService {
         'content.meta.public': { $ne: true },
       })
       .lean();
-    if (!terminal) throw new NotFoundException();
+
+    if (!terminal) {
+      // Self-heal: remove stale unlock entry for authenticated callers
+      if (actor) {
+        await this.userModel.updateOne(
+          { _id: actor.id },
+          { $pull: { [`unlockedHiddenIds.${campaignId}`]: hiddenId } },
+        );
+      }
+      throw new NotFoundException();
+    }
 
     const campaign = await this.campaignModel
       .findById(terminal.campaignId)
@@ -345,6 +403,20 @@ export class TerminalsService {
 
     if (this.shouldCountView(actor))
       await this.incrementViewCount(terminal._id);
+
+    // Write side-effects on success
+    if (actor) {
+      await this.userModel.updateOne(
+        { _id: actor.id },
+        { $set: { lastCampaignId: campaignId } },
+      );
+      if (actor.role === 'player') {
+        await this.userModel.updateOne(
+          { _id: actor.id },
+          { $addToSet: { [`unlockedHiddenIds.${campaignId}`]: hiddenId } },
+        );
+      }
+    }
 
     return {
       content: withInjectedMetaId(stripContent(terminal.content), terminal._id),
@@ -398,7 +470,7 @@ export class TerminalsService {
   private toSummary(terminal: Terminal & { _id: unknown }) {
     const content = terminal.content;
     const meta = content?.meta as Record<string, unknown> | undefined;
-    return {
+    const summary: Record<string, unknown> = {
       id: String(terminal._id),
       campaignId: String((terminal as { campaignId: unknown }).campaignId),
       title: terminal.title,
@@ -407,5 +479,9 @@ export class TerminalsService {
       createdAt: terminal.createdAt,
       updatedAt: terminal.updatedAt,
     };
+    if (typeof meta?.hiddenId === 'string' && meta.hiddenId) {
+      summary.hiddenId = meta.hiddenId;
+    }
+    return summary;
   }
 }

@@ -36,8 +36,11 @@ export class TerminalsController {
   @UseGuards(JwtOptionalGuard, CampaignAccessGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List terminals in campaign' })
-  listByCampaign(@Param('id') id: string) {
-    return this.terminalsService.listByCampaign(id);
+  listByCampaign(
+    @Param('id') id: string,
+    @Request() req: { user?: AuthenticatedUser },
+  ) {
+    return this.terminalsService.listByCampaign(id, req.user);
   }
 
   @Post('campaigns/:id/terminals')
@@ -136,6 +139,7 @@ export class TerminalsController {
   }
 
   @Post('terminals/:id/state/mutate')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, TerminalAccessGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mutate terminal local state' })
@@ -144,6 +148,7 @@ export class TerminalsController {
   }
 
   @Post('terminals/:id/state/reset')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Reset all terminal local state (admin)' })
@@ -152,6 +157,7 @@ export class TerminalsController {
   }
 
   @Post('terminals/:id/state/:key/reset')
+  @HttpCode(200)
   @UseGuards(JwtOptionalGuard, AdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Reset single terminal state variable (admin)' })

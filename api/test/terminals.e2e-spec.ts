@@ -32,7 +32,7 @@ describe('TerminalsModule (e2e)', () => {
   let fictionalUserModel: Model<FictionalUser>;
 
   const contentWithLogin = {
-    meta: { title: 'Secret Terminal' },
+    meta: { title: 'Secret Terminal', public: true },
     state: { local: { seen: { type: 'boolean', default: false } }, global: {} },
     login: { users: [{ username: 'robco_user', password: 'supersecret' }] },
     nodes: { start: { text: 'Access restricted', choices: [] } },
@@ -826,7 +826,7 @@ describe('Terminal viewCount (e2e)', () => {
       method: 'POST',
       url: `/campaigns/${campaignId}/terminals`,
       headers: { Authorization: `Bearer ${adminToken}` },
-      payload: { meta: { title: 'Visible' }, nodes: {} },
+      payload: { meta: { title: 'Visible', public: true }, nodes: {} },
     });
     const terminalId = JSON.parse(t.body).id;
 
@@ -965,5 +965,294 @@ describe('Terminal viewCount (e2e)', () => {
       expect(res.statusCode).toBe(200);
       expect(await viewCountOf(ctx, ctx.hiddenTerminalId)).toBe(before + 1);
     });
+  });
+});
+
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+describe('Terminal unlock lifecycle (e2e)', () => {
+  let app: NestFastifyApplication;
+  let userModel: Model<User>;
+  let adminToken: string;
+  let playerToken: string;
+  let playerId: string;
+  let campaignId: string;
+  let publicTerminalId: string;
+  let privateTerminalId: string;
+
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+
+  beforeAll(async () => {
+    const uri = await startMongoMemoryServer();
+    const module = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
+        mongooseTestModule(uri),
+        MongooseModule.forFeature([
+          { name: User.name, schema: UserSchema },
+          { name: FictionalUser.name, schema: FictionalUserSchema },
+          { name: Campaign.name, schema: CampaignSchema },
+        ]),
+        AuthModule,
+        UsersModule,
+        CampaignsModule,
+        TerminalsModule,
+      ],
+    }).compile();
+    app = await createTestApp(module);
+    userModel = module.get(getModelToken(User.name));
+
+    const hash = await bcrypt.hash('pass', 12);
+    await userModel.create({
+      username: 'admin',
+      passwordHash: hash,
+      role: 'admin',
+    });
+    await userModel.create({
+      username: 'player',
+      passwordHash: hash,
+      role: 'player',
+    });
+
+    const al = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { username: 'admin', password: 'pass' },
+    });
+    adminToken = JSON.parse(al.body).accessToken;
+    const pl = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { username: 'player', password: 'pass' },
+    });
+    playerToken = JSON.parse(pl.body).accessToken;
+    const me = await app.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: auth(playerToken),
+    });
+    playerId = JSON.parse(me.body).id;
+
+    const cr = await app.inject({
+      method: 'POST',
+      url: '/campaigns',
+      headers: auth(adminToken),
+      payload: { name: 'C', isActive: true, isPublic: true },
+    });
+    campaignId = JSON.parse(cr.body).id;
+
+    const t1 = await app.inject({
+      method: 'POST',
+      url: `/campaigns/${campaignId}/terminals`,
+      headers: auth(adminToken),
+      payload: { meta: { title: 'Public T', public: true }, nodes: {} },
+    });
+    publicTerminalId = JSON.parse(t1.body).id;
+
+    const t2 = await app.inject({
+      method: 'POST',
+      url: `/campaigns/${campaignId}/terminals`,
+      headers: auth(adminToken),
+      payload: {
+        meta: { title: 'Private T', hiddenId: 'secret-slug', public: false },
+        nodes: {},
+      },
+    });
+    privateTerminalId = JSON.parse(t2.body).id;
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await stopMongoMemoryServer();
+  });
+
+  it('player sees only public terminal before resolving hidden one', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaignId}/terminals`,
+      headers: auth(playerToken),
+    });
+    const list = JSON.parse(res.body) as { id: string }[];
+    expect(list.map((t) => t.id)).toContain(publicTerminalId);
+    expect(list.map((t) => t.id)).not.toContain(privateTerminalId);
+  });
+
+  it('player resolves hidden terminal via by-hidden-id → 200 and unlock recorded', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaignId}/terminals/by-hidden-id/secret-slug`,
+      headers: auth(playerToken),
+    });
+    expect(res.statusCode).toBe(200);
+
+    const userDoc = await userModel.findById(playerId).lean();
+    const unlocks: string[] =
+      userDoc!.unlockedHiddenIds?.get?.(campaignId) ??
+      (userDoc!.unlockedHiddenIds as unknown as Record<string, string[]>)?.[
+        campaignId
+      ] ??
+      [];
+    expect(unlocks).toContain('secret-slug');
+  });
+
+  it('player sees private terminal in list after unlock', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaignId}/terminals`,
+      headers: auth(playerToken),
+    });
+    const list = JSON.parse(res.body) as { id: string }[];
+    expect(list.map((t) => t.id)).toContain(privateTerminalId);
+  });
+
+  it('player can load private terminal directly by id after unlock', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/terminals/${privateTerminalId}/load`,
+      headers: auth(playerToken),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('admin deletes private terminal → it disappears from list and unlock entry is removed', async () => {
+    await app.inject({
+      method: 'DELETE',
+      url: `/terminals/${privateTerminalId}`,
+      headers: auth(adminToken),
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaignId}/terminals`,
+      headers: auth(playerToken),
+    });
+    const list = JSON.parse(res.body) as { id: string }[];
+    expect(list.map((t) => t.id)).not.toContain(privateTerminalId);
+
+    const userDoc = await userModel.findById(playerId).lean();
+    const unlocks: string[] =
+      userDoc!.unlockedHiddenIds?.get?.(campaignId) ??
+      (userDoc!.unlockedHiddenIds as unknown as Record<string, string[]>)?.[
+        campaignId
+      ] ??
+      [];
+    expect(unlocks ?? []).not.toContain('secret-slug');
+  });
+});
+
+describe('/auth/me self-heal lastCampaignId (e2e)', () => {
+  let app: NestFastifyApplication;
+  let userModel: Model<User>;
+  let playerToken: string;
+  let playerId: string;
+  let adminToken: string;
+
+  const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
+
+  beforeAll(async () => {
+    const uri = await startMongoMemoryServer();
+    const module = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
+        mongooseTestModule(uri),
+        MongooseModule.forFeature([
+          { name: User.name, schema: UserSchema },
+          { name: Campaign.name, schema: CampaignSchema },
+          { name: FictionalUser.name, schema: FictionalUserSchema },
+        ]),
+        AuthModule,
+        UsersModule,
+        CampaignsModule,
+        TerminalsModule,
+      ],
+    }).compile();
+    app = await createTestApp(module);
+    userModel = module.get(getModelToken(User.name));
+
+    const hash = await bcrypt.hash('pass', 12);
+    await userModel.create({
+      username: 'admin',
+      passwordHash: hash,
+      role: 'admin',
+    });
+    await userModel.create({
+      username: 'player',
+      passwordHash: hash,
+      role: 'player',
+    });
+
+    const al = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { username: 'admin', password: 'pass' },
+    });
+    adminToken = JSON.parse(al.body).accessToken;
+    const pl = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { username: 'player', password: 'pass' },
+    });
+    playerToken = JSON.parse(pl.body).accessToken;
+    const me = await app.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: auth(playerToken),
+    });
+    playerId = JSON.parse(me.body).id;
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await stopMongoMemoryServer();
+  });
+
+  it('self-heal: stale lastCampaignId is cleared on /auth/me and persisted', async () => {
+    // Plant a stale lastCampaignId directly in the DB (simulates missed cascade)
+    const fakeId = String(new Types.ObjectId());
+    await userModel.updateOne(
+      { _id: playerId },
+      { $set: { lastCampaignId: fakeId } },
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: auth(playerToken),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).lastCampaignId).toBeNull();
+
+    // Verify it was persisted
+    const userDoc = await userModel.findById(playerId).lean();
+    expect(userDoc!.lastCampaignId).toBeNull();
+  });
+
+  it('/auth/me returns null lastCampaignId after campaign cascade delete', async () => {
+    const cr = await app.inject({
+      method: 'POST',
+      url: '/campaigns',
+      headers: auth(adminToken),
+      payload: { name: 'Camp', isActive: true, isPublic: true },
+    });
+    const campId = JSON.parse(cr.body).id;
+
+    // Set lastCampaignId via cascade-eligible operation
+    await userModel.updateOne(
+      { _id: playerId },
+      { $set: { lastCampaignId: campId } },
+    );
+
+    // Admin deletes the campaign — cascade should clear it
+    await app.inject({
+      method: 'DELETE',
+      url: `/campaigns/${campId}`,
+      headers: auth(adminToken),
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/me',
+      headers: auth(playerToken),
+    });
+    expect(JSON.parse(res.body).lastCampaignId).toBeNull();
   });
 });

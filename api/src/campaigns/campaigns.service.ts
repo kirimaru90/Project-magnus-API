@@ -107,6 +107,15 @@ export class CampaignsService {
         terminalId: { $in: terminalIds },
       });
     }
+    const campaignId = String(campaign._id);
+    await this.userModel.updateMany(
+      { lastCampaignId: campaignId },
+      { $set: { lastCampaignId: null } },
+    );
+    await this.userModel.updateMany(
+      {},
+      { $unset: { [`unlockedHiddenIds.${campaignId}`]: '' } },
+    );
   }
 
   async toggleActive(id: string) {

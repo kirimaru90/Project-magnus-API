@@ -1,0 +1,2058 @@
+openapi: 3.0.3
+info:
+  title: MAGNUS API
+  description: |
+    MAGNUS game-master API for managing campaigns, terminals, characters, and players.
+
+    **Authentication:** JWT Bearer tokens (HS256, 24h expiry). Obtain via `POST /auth/login`.
+
+    **Access control:**
+    - Anonymous — public + active resources only
+    - Player — public + active + assigned campaigns, own characters only
+    - Admin — all resources
+
+    **404 policy:** The API returns 404 for both "not found" and "access denied" to avoid leaking existence.
+  version: 1.0.0
+
+servers:
+  - url: /
+    description: Local server
+
+tags:
+  - name: Auth
+  - name: Users
+  - name: Campaigns
+  - name: Campaign State
+  - name: Campaign Configuration
+  - name: Terminals
+  - name: Terminal State
+  - name: Characters
+  - name: Health
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ─── Primitives ──────────────────────────────────────────────────────────────
+    ObjectId:
+      type: string
+      pattern: '^[a-f0-9]{24}$'
+      example: '65f1a2b3c4d5e6f7a8b9c0d1'
+
+    NanoId:
+      type: string
+      minLength: 8
+      maxLength: 8
+      example: 'aB3dE8gH'
+
+    Role:
+      type: string
+      enum: [admin, player]
+
+    Species:
+      type: string
+      enum: [human, ghoul, super_mutant, robot]
+
+    StateVarType:
+      type: string
+      enum: [boolean, number, enum, string]
+
+    SkillLevel:
+      type: string
+      enum: [competent, expert, master]
+
+    ConditionSeverity:
+      type: string
+      enum: [minor, major]
+
+    TagType:
+      type: string
+      enum: [core, extra]
+
+    PaTrackedBy:
+      type: string
+      enum: [agility, endurance]
+
+    MutationOp:
+      type: string
+      enum: [set, increment, toggle]
+
+    # ─── State ───────────────────────────────────────────────────────────────────
+    StateEntry:
+      type: object
+      required: [type, value, default]
+      properties:
+        type:
+          $ref: '#/components/schemas/StateVarType'
+        value:
+          description: Current runtime value
+        default:
+          description: Default value (used for reset)
+        values:
+          type: array
+          items:
+            type: string
+          description: Allowed values (enum type only)
+
+    StateMap:
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/StateEntry'
+      example:
+        omega_activated:
+          type: boolean
+          value: false
+          default: false
+
+    FlatState:
+      type: object
+      additionalProperties: {}
+      example:
+        omega_activated: false
+        counter: 5
+
+    StateMutation:
+      type: object
+      required: [key, op]
+      properties:
+        key:
+          type: string
+          pattern: '^(local|global)\..+'
+          example: global.counter
+        op:
+          $ref: '#/components/schemas/MutationOp'
+        value:
+          description: Required for op=set
+        by:
+          type: number
+          description: Required for op=increment
+
+    # ─── User ────────────────────────────────────────────────────────────────────
+    UserResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        createdAt:
+          type: string
+          format: date-time
+
+    MeResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        lastCampaignId:
+          $ref: '#/components/schemas/ObjectId'
+          nullable: true
+        unlockedHiddenIds:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Map of campaignId → array of unlocked hidden terminal slugs
+
+    CreateUserDto:
+      type: object
+      required: [username, password, role]
+      properties:
+        username:
+          type: string
+          pattern: '^[a-zA-Z0-9_.\-]{3,32}$'
+        password:
+          type: string
+          minLength: 8
+        role:
+          $ref: '#/components/schemas/Role'
+
+    UpdateUserDto:
+      type: object
+      properties:
+        username:
+          type: string
+          pattern: '^[a-zA-Z0-9_.\-]{3,32}$'
+        password:
+          type: string
+          minLength: 8
+        role:
+          $ref: '#/components/schemas/Role'
+
+    # ─── Campaign ────────────────────────────────────────────────────────────────
+    CampaignResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+        isActive:
+          type: boolean
+        isPublic:
+          type: boolean
+        state:
+          $ref: '#/components/schemas/StateMap'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectId'
+          description: Player IDs — only populated for admin callers
+
+    CreateCampaignDto:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        isActive:
+          type: boolean
+          default: false
+        isPublic:
+          type: boolean
+          default: false
+
+    UpdateCampaignDto:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        isActive:
+          type: boolean
+        isPublic:
+          type: boolean
+
+    AddPlayerDto:
+      type: object
+      required: [playerId]
+      properties:
+        playerId:
+          $ref: '#/components/schemas/ObjectId'
+
+    # ─── Terminal ────────────────────────────────────────────────────────────────
+    TerminalMeta:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        hiddenId:
+          type: string
+          description: Campaign-scoped slug for hidden terminal lookup
+        public:
+          type: boolean
+        id:
+          $ref: '#/components/schemas/ObjectId'
+          readOnly: true
+          description: Server-injected — never send in request bodies
+
+    TerminalStateDefinition:
+      type: object
+      properties:
+        local:
+          $ref: '#/components/schemas/StateMap'
+        global:
+          $ref: '#/components/schemas/StateMap'
+
+    TerminalLogin:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            type: object
+            required: [username, password]
+            properties:
+              username:
+                type: string
+              password:
+                type: string
+          description: Always returned as [] in responses — passwords are never exposed
+
+    TerminalContent:
+      type: object
+      required: [meta, nodes]
+      properties:
+        meta:
+          $ref: '#/components/schemas/TerminalMeta'
+        state:
+          $ref: '#/components/schemas/TerminalStateDefinition'
+        login:
+          $ref: '#/components/schemas/TerminalLogin'
+        nodes:
+          type: object
+          additionalProperties: {}
+          description: Arbitrary node map defining terminal interactive content
+
+    TerminalSummary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        campaignId:
+          $ref: '#/components/schemas/ObjectId'
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TerminalDetail:
+      allOf:
+        - $ref: '#/components/schemas/TerminalSummary'
+        - type: object
+          properties:
+            content:
+              $ref: '#/components/schemas/TerminalContent'
+            viewCount:
+              type: integer
+
+    TerminalLoadResponse:
+      type: object
+      properties:
+        content:
+          $ref: '#/components/schemas/TerminalContent'
+        localState:
+          $ref: '#/components/schemas/FlatState'
+        globalState:
+          $ref: '#/components/schemas/FlatState'
+
+    FictionalLoginDto:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    FictionalLoginResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        username:
+          type: string
+
+    # ─── Character ───────────────────────────────────────────────────────────────
+    SpecialSection:
+      type: object
+      properties:
+        strength:
+          type: integer
+          minimum: 1
+          maximum: 5
+        perception:
+          type: integer
+          minimum: 1
+          maximum: 5
+        endurance:
+          type: integer
+          minimum: 1
+          maximum: 5
+        charisma:
+          type: integer
+          minimum: 1
+          maximum: 5
+        intelligence:
+          type: integer
+          minimum: 1
+          maximum: 5
+        agility:
+          type: integer
+          minimum: 1
+          maximum: 5
+        luck:
+          type: integer
+          minimum: 1
+          maximum: 5
+
+    CharacterSkill:
+      type: object
+      required: [id, level]
+      properties:
+        id:
+          type: string
+          description: Catalog slug (e.g. "lockpick") — caller-supplied
+        level:
+          $ref: '#/components/schemas/SkillLevel'
+
+    ActionPoints:
+      type: object
+      properties:
+        paMax:
+          type: integer
+        paCurrent:
+          type: integer
+        paTrackedBy:
+          $ref: '#/components/schemas/PaTrackedBy'
+
+    Condition:
+      type: object
+      required: [id, name, severity]
+      properties:
+        id:
+          $ref: '#/components/schemas/NanoId'
+        name:
+          type: string
+        severity:
+          $ref: '#/components/schemas/ConditionSeverity'
+        description:
+          type: string
+
+    StatusSection:
+      type: object
+      properties:
+        positiveConditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Condition'
+        negativeConditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Condition'
+        criticalState:
+          type: boolean
+
+    CharacterPerk:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/NanoId'
+        name:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+
+    ResourcesSection:
+      type: object
+      properties:
+        caps:
+          type: integer
+        bobbleheads:
+          type: integer
+          description: Admin-write only
+        scraps:
+          type: integer
+
+    Tag:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/TagType'
+        damaged:
+          type: boolean
+
+    WeaponItem:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/NanoId'
+        name:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        broken:
+          type: boolean
+
+    ConsumableItem:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/NanoId'
+        name:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: integer
+          default: 0
+
+    InventorySection:
+      type: object
+      properties:
+        weapons:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeaponItem'
+        equip:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeaponItem'
+        consumables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConsumableItem'
+        other:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConsumableItem'
+
+    CharacterResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ObjectId'
+        campaignId:
+          $ref: '#/components/schemas/ObjectId'
+        userId:
+          $ref: '#/components/schemas/ObjectId'
+        name:
+          type: string
+        species:
+          $ref: '#/components/schemas/Species'
+        special:
+          $ref: '#/components/schemas/SpecialSection'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharacterSkill'
+        actionPoints:
+          $ref: '#/components/schemas/ActionPoints'
+        status:
+          $ref: '#/components/schemas/StatusSection'
+        perks:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharacterPerk'
+        resources:
+          $ref: '#/components/schemas/ResourcesSection'
+        inventory:
+          $ref: '#/components/schemas/InventorySection'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateCharacterDto:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        species:
+          $ref: '#/components/schemas/Species'
+        userId:
+          $ref: '#/components/schemas/ObjectId'
+          description: Required when caller is admin; ignored for players
+
+    # ─── Configuration ───────────────────────────────────────────────────────────
+    ConfigurationResponse:
+      type: object
+      properties:
+        terminal:
+          type: object
+          additionalProperties: {}
+
+    # ─── Errors ──────────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+        message:
+          type: string
+        error:
+          type: string
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or expired token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated but insufficient role
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found or caller cannot access it
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NoContent:
+      description: Success with no body
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATHS
+# ═══════════════════════════════════════════════════════════════════════════════
+paths:
+
+  # ─── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  mongo:
+                    type: string
+                    example: ok
+
+  # ─── Auth ────────────────────────────────────────────────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and obtain a JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: JWT issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  role:
+                    $ref: '#/components/schemas/Role'
+                  expiresIn:
+                    type: integer
+                    description: Seconds until token expiry
+                    example: 86400
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out (client-side token invalidation)
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Users ───────────────────────────────────────────────────────────────────
+  /users:
+    get:
+      tags: [Users]
+      summary: List all users (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Users]
+      summary: Create a user (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserDto'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/me/configuration:
+    get:
+      tags: [Users]
+      summary: Get own configuration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/configuration/terminal:
+    put:
+      tags: [Users]
+      summary: Replace own terminal configuration domain
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: {}
+      responses:
+        '200':
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Users]
+      summary: Get user by ID (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Users]
+      summary: Update user (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserDto'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Users]
+      summary: Delete user (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Campaigns ───────────────────────────────────────────────────────────────
+  /campaigns:
+    get:
+      tags: [Campaigns]
+      summary: List campaigns (actor-filtered)
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campaign list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CampaignResponse'
+
+    post:
+      tags: [Campaigns]
+      summary: Create campaign (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignDto'
+      responses:
+        '201':
+          description: Campaign created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /campaigns/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Campaigns]
+      summary: Get campaign detail
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campaign detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Campaigns]
+      summary: Update campaign (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCampaignDto'
+      responses:
+        '200':
+          description: Updated campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Campaigns]
+      summary: Delete campaign and cascade (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/activate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Campaigns]
+      summary: Toggle campaign isActive (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campaign with updated isActive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/players:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Campaigns]
+      summary: List players assigned to campaign (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Player list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags: [Campaigns]
+      summary: Add player to campaign (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddPlayerDto'
+      responses:
+        '200':
+          description: Updated campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/players/{playerId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: playerId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    delete:
+      tags: [Campaigns]
+      summary: Remove player from campaign (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Updated campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Campaign State ───────────────────────────────────────────────────────────
+  /campaigns/{id}/state:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    get:
+      tags: [Campaign State]
+      summary: Get flat global state for campaign
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Flat state map
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/state/mutate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Campaign State]
+      summary: Apply mutations to global campaign state
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mutations]
+              properties:
+                mutations:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/StateMutation'
+      responses:
+        '200':
+          description: Updated flat state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    $ref: '#/components/schemas/FlatState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/state/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Campaign State]
+      summary: Reset all campaign state and all terminal states (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: State after reset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/state/{key}/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Campaign State]
+      summary: Reset a single campaign state variable (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: State after reset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Campaign Configuration ───────────────────────────────────────────────────
+  /campaigns/{id}/configuration:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    get:
+      tags: [Campaign Configuration]
+      summary: Get effective campaign configuration
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campaign configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/configuration/terminal:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    put:
+      tags: [Campaign Configuration]
+      summary: Replace campaign terminal configuration domain (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: {}
+      responses:
+        '200':
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Terminals (campaign-scoped) ──────────────────────────────────────────────
+  /campaigns/{id}/terminals:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Terminals]
+      summary: List terminals in campaign
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terminal list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TerminalSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags: [Terminals]
+      summary: Create terminal in campaign (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminalContent'
+      responses:
+        '201':
+          description: Terminal created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/terminals/import:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Terminals]
+      summary: Import terminal from JSON export (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminalContent'
+      responses:
+        '201':
+          description: Terminal imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{id}/terminals/by-hidden-id/{hiddenId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: hiddenId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Terminals]
+      summary: Load hidden terminal by campaign-scoped slug
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terminal load payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalLoadResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Terminals (root-scoped) ──────────────────────────────────────────────────
+  /terminals/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Terminals]
+      summary: Get terminal detail (fictional users shown to admin only)
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terminal detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Terminals]
+      summary: Update terminal (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminalContent'
+      responses:
+        '200':
+          description: Updated terminal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Terminals]
+      summary: Delete terminal (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/export:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Terminals]
+      summary: Export terminal content as JSON (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terminal content export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/load:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    get:
+      tags: [Terminals]
+      summary: Load terminal for playback (content + current state)
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terminal load payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalLoadResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/fictional-login:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Terminals]
+      summary: Validate fictional user credentials inside a terminal
+      description: |
+        Validates credentials against the terminal's `login.users` list.
+        On failure always returns 401 with a generic message to avoid leaking user existence.
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FictionalLoginDto'
+      responses:
+        '200':
+          description: Credentials accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FictionalLoginResponse'
+        '401':
+          description: Invalid credentials (intentionally vague)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Terminal State ───────────────────────────────────────────────────────────
+  /terminals/{id}/state:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    get:
+      tags: [Terminal State]
+      summary: Get flat local state for terminal
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Flat local state map
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/state/mutate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Terminal State]
+      summary: Apply mutations to terminal local state
+      description: Keys must use the `local.*` prefix.
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mutations]
+              properties:
+                mutations:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/StateMutation'
+      responses:
+        '200':
+          description: Updated flat state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    $ref: '#/components/schemas/FlatState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/state/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    post:
+      tags: [Terminal State]
+      summary: Reset all local terminal state (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: State after reset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/state/{key}/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Terminal State]
+      summary: Reset a single local terminal state variable (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: State after reset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlatState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Characters ───────────────────────────────────────────────────────────────
+  /campaigns/{campaignId}/characters:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Characters]
+      summary: List characters in campaign (actor-scoped)
+      description: Players see only their own characters; admins see all.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Character list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CharacterResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags: [Characters]
+      summary: Create character in campaign
+      description: |
+        Players create characters for themselves (userId ignored).
+        Admins must supply userId to assign the character to a player.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCharacterDto'
+      responses:
+        '201':
+          description: Character created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CharacterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+
+    get:
+      tags: [Characters]
+      summary: Get character detail
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Character detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CharacterResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Characters]
+      summary: Full character update
+      description: |
+        Admin-only fields (`special`, `skills`, `perks`) are silently dropped when sent by a player.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CharacterResponse'
+      responses:
+        '200':
+          description: Updated character
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CharacterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Characters]
+      summary: Soft-delete character
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/special:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch SPECIAL stats (admin-write only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpecialSection'
+      responses:
+        '200':
+          description: Updated SPECIAL section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecialSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/skills:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch skills (admin-write only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/CharacterSkill'
+      responses:
+        '200':
+          description: Updated skills list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CharacterSkill'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/perks:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch perks (admin-write only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/CharacterPerk'
+      responses:
+        '200':
+          description: Updated perks list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CharacterPerk'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/status:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch status (conditions + critical state)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusSection'
+      responses:
+        '200':
+          description: Updated status section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/action-points:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch action points
+      description: Players may only update `paCurrent`. `paMax` and `paTrackedBy` are admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionPoints'
+      responses:
+        '200':
+          description: Updated action points section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionPoints'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/inventory:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch inventory items
+      description: |
+        Omit `id` to create a new item (server mints a nanoid). Provide `id` to update or delete.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventorySection'
+      responses:
+        '200':
+          description: Updated inventory section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventorySection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /campaigns/{campaignId}/characters/{characterId}/resources:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+      - name: characterId
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [Characters]
+      summary: Patch resource counters
+      description: Players may update `caps` and `scraps`. `bobbleheads` is admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourcesSection'
+      responses:
+        '200':
+          description: Updated resources section
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourcesSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
