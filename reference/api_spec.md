@@ -330,7 +330,8 @@ wholesale; do not merge-patch keys.
 
 ### 6.1 Key syntax and scope routing
 
-Keys in mutations and conditions are always prefixed `local.` or `global.`. The
+Variable references are always prefixed `local.` or `global.` — in mutations via `key`
+(`on_enter`, choice `set`) and in conditions via `var` (`when` predicates). The
 Terminal routes mutations to the correct endpoint based on the prefix:
 
 | Key prefix | Endpoint                                |

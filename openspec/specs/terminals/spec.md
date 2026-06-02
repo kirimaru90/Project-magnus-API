@@ -154,9 +154,14 @@ The API SHALL expose two read endpoints for a terminal:
 - `GET /terminals/:id` — returns the terminal record with `content` (stripped of any login user passwords), `state` (current values), `campaignId`, `title`. Visible per the campaign access rules.
 - `GET /terminals/:id/load` — returns a playback payload: `{ content, localState, globalState }` where both state objects are flat `{ key: value }` maps. Designed for the Terminal client.
 
-Neither route SHALL include fictional credentials in the response.
+Neither route SHALL include fictional user passwords in the response.
 
 The terminal's `content.meta.id` SHALL NOT be persisted in the document. On all read paths, the service SHALL inject `content.meta.id = String(_id)` into the returned `content.meta` — the same identifier returned as the top-level `id` in list summaries — and SHALL return `content.meta.hiddenId` as stored (omitted when not set). This injection is applied to `GET /terminals/:id`, `GET /terminals/:id/load`, and the by-hidden-id lookup.
+
+**`content.login` contract on playback (`load` and `by-hidden-id`):**
+- When the terminal has fictional users, the response SHALL include `content.login.users` as an array of `{ username }` objects (passwords are stripped at write time by `contentWithoutUsers()`; the username list is safe to forward for the login dropdown).
+- When the terminal has no fictional users, the `login` key SHALL be absent from `content` entirely. A vacuous `login: { users: [] }` SHALL NOT be returned.
+- The `GET /terminals/:id` (detail) endpoint follows the same `stripContent` rule: usernames present when users exist, `login` key absent when none.
 
 #### Scenario: Player loads a terminal in an assigned campaign
 - **WHEN** a player calls `GET /terminals/T/load` where T belongs to a campaign assigned to them
@@ -187,6 +192,16 @@ The terminal's `content.meta.id` SHALL NOT be persisted in the document. On all 
 #### Scenario: meta.id injected on load equals the mongo id
 - **WHEN** any authorized caller reads `GET /terminals/T/load`
 - **THEN** the response's `content.meta.id` equals `String(_id)` of terminal T
+
+#### Scenario: Load with fictional users returns username list, no passwords
+- **GIVEN** terminal T has fictional users `[{username:"alice", password:"secret"}]`
+- **WHEN** any authorized caller reads `GET /terminals/T/load`
+- **THEN** the response's `content.login.users` is `[{username:"alice"}]` (no `password` field)
+
+#### Scenario: Load with no fictional users omits the login key
+- **GIVEN** terminal T has no fictional users
+- **WHEN** any authorized caller reads `GET /terminals/T/load`
+- **THEN** the response body's `content` has no `login` key
 
 ### Requirement: Updating and deleting terminals
 The API SHALL expose `PUT /terminals/:id` (admin) and `DELETE /terminals/:id` (admin).
@@ -258,6 +273,27 @@ The API SHALL expose `POST /terminals/:id/fictional-login` accepting `{ username
 #### Scenario: Anonymous fictional login on public campaign
 - **WHEN** an anonymous caller posts valid fictional credentials for a terminal in an active public campaign
 - **THEN** the response is HTTP 200
+
+### Requirement: Node graph integrity
+
+The API SHALL validate that every `choices[].target` string in the submitted `nodes` map — including choices nested inside `variants[].choices` — resolves to an existing key in the same `nodes` map, at create, import, and update time. Any `target` value not present in `Object.keys(nodes)` is a dangling reference. If one or more dangling references are found, the API SHALL reject the request with HTTP 400, and the error message SHALL name all dangling targets. This is a pure in-memory check; no extra DB reads are required.
+
+#### Scenario: Dangling choices[].target rejected on create
+- **WHEN** an admin posts a terminal whose `nodes.start.choices[0].target` is `"missing_node"` and `nodes` has no key `"missing_node"`
+- **THEN** the response is HTTP 400 and the error message names `"missing_node"`
+
+#### Scenario: Dangling variants[].choices[].target rejected
+- **WHEN** an admin posts a terminal whose `nodes.start.variants[0].choices[0].target` is `"ghost_node"` and `nodes` has no key `"ghost_node"`
+- **THEN** the response is HTTP 400 and the error message names `"ghost_node"`
+
+#### Scenario: All targets valid accepted on create
+- **GIVEN** `nodes` contains keys `"start"` and `"end"`, and `nodes.start.choices[0].target == "end"`
+- **WHEN** an admin posts this terminal
+- **THEN** the response is HTTP 201
+
+#### Scenario: Dangling target rejected on update
+- **WHEN** an admin PUTs content whose `nodes` contains a `choices[].target` pointing to a key not in `nodes`
+- **THEN** the response is HTTP 400
 
 ### Requirement: State variable declarations are validated on write
 

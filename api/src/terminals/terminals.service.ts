@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -49,10 +50,11 @@ function stripContent(
 ): Record<string, unknown> {
   const stripped = { ...content };
   if (stripped.login && typeof stripped.login === 'object') {
-    stripped.login = {
-      ...(stripped.login as Record<string, unknown>),
-      users: [],
-    };
+    const users = (stripped.login as Record<string, unknown>).users;
+    if (!Array.isArray(users) || users.length === 0) {
+      delete stripped.login;
+    }
+    // else: users already contain only {username}, no password — pass through as-is
   }
   return stripped;
 }
@@ -134,6 +136,32 @@ export class TerminalsService {
     return localState;
   }
 
+  private validateNodeGraph(nodes: Record<string, unknown>): void {
+    const targets: string[] = [];
+    for (const node of Object.values(nodes)) {
+      if (!node || typeof node !== 'object') continue;
+      const n = node as Record<string, unknown>;
+      for (const choice of (n.choices as Array<Record<string, unknown>>) ??
+        []) {
+        if (typeof choice?.target === 'string') targets.push(choice.target);
+      }
+      for (const variant of (n.variants as Array<Record<string, unknown>>) ??
+        []) {
+        for (const choice of (variant?.choices as Array<
+          Record<string, unknown>
+        >) ?? []) {
+          if (typeof choice?.target === 'string') targets.push(choice.target);
+        }
+      }
+    }
+    const dangling = [...new Set(targets)].filter((t) => !(t in nodes));
+    if (dangling.length > 0) {
+      throw new BadRequestException(
+        `nodes contains dangling choice targets: ${dangling.join(', ')}`,
+      );
+    }
+  }
+
   private contentWithoutUsers(
     dto: TerminalContentDto,
   ): Record<string, unknown> {
@@ -142,7 +170,7 @@ export class TerminalsService {
       state: dto.state ?? {},
       nodes: dto.nodes,
     };
-    if (dto.login) {
+    if (dto.login?.users?.length) {
       content.login = {
         users: dto.login.users.map((u) => ({ username: u.username })),
       };
@@ -152,6 +180,7 @@ export class TerminalsService {
 
   async create(campaignId: string, dto: TerminalContentDto) {
     if (!Types.ObjectId.isValid(campaignId)) throw new NotFoundException();
+    this.validateNodeGraph(dto.nodes);
     const campId = new Types.ObjectId(campaignId);
     const localState = await this.projectState(campId, dto);
 
@@ -187,6 +216,7 @@ export class TerminalsService {
   }
 
   async update(id: string, dto: TerminalContentDto) {
+    this.validateNodeGraph(dto.nodes);
     const existing = await this.terminalModel.findById(id).lean();
     if (!existing) throw new NotFoundException();
 

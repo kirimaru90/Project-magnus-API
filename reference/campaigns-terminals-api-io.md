@@ -291,3 +291,19 @@ campaign-level access:
 Common errors (HTTP 400): `All mutations must use scope "<scope>"…`,
 `Invalid key format: <key>`, `Undeclared variable: <name>`, and per-op type messages
 (e.g. `set value must be number`, `increment requires type:number for key`).
+
+
+---
+
+## Schema-admin endpoints
+
+The API also exposes two admin-only `PATCH` endpoints for evolving the state *schema*
+(adding, updating, or deleting variables), distinct from the runtime mutation endpoints
+above.
+
+- `PATCH /campaigns/:id/state/schema` — modify the campaign global state schema
+- `PATCH /terminals/:id/state/schema` — modify a terminal local state schema
+
+Full payload specification, error body shapes (including the 409 `referencedBy` conflict
+body), the cross-reference convention, and recommended backoffice UX are documented in
+[**reference/state-schema-admin-sync.md**](./state-schema-admin-sync.md).

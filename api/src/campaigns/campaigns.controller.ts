@@ -27,6 +27,7 @@ export class CampaignsController {
 
   @Get()
   @UseGuards(JwtOptionalGuard)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'List campaigns (actor-dependent)' })
   list(@Request() req: { user?: AuthenticatedUser }) {
     return this.campaignsService.list(req.user);

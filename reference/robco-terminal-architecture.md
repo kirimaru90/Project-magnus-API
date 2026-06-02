@@ -398,7 +398,7 @@ Reset always restores `default_value` from the row. Since `default_value` is mir
   "meta": {
     "title": "Super-Duper Mart - Terminale Amministrativo",
     "public": true,
-    "id": "super-duper-admin"
+    "hiddenId": "super-duper-admin"
   },
 
   "state": {
@@ -430,12 +430,12 @@ Reset always restores `default_value` from the row. Since `default_value` is mir
           "target": "bunker_open",
           "when": {
             "and": [
-              { "key": "local.bunker_code_seen", "eq": true },
-              { "key": "global.omega_activated", "eq": false }
+              { "var": "local.bunker_code_seen", "op": "eq", "value": true },
+              { "var": "global.omega_activated", "op": "eq", "value": false }
             ]
           },
           "set": [
-            { "key": "global.omega_activated", "value": true }
+            { "key": "global.omega_activated", "op": "set", "value": true }
           ]
         }
       ]
@@ -444,7 +444,7 @@ Reset always restores `default_value` from the row. Since `default_value` is mir
     "porta_bunker": {
       "variants": [
         {
-          "when": { "key": "local.bunker_code_seen", "eq": true },
+          "when": { "var": "local.bunker_code_seen", "op": "eq", "value": true },
           "text": "Conosci il codice: **58874645**.",
           "choices": [{ "label": "[ Entra ]", "target": "bunker_interno" }]
         },
@@ -464,7 +464,7 @@ Reset always restores `default_value` from the row. Since `default_value` is mir
           "placeholder": "CODICE...",
           "set": "local.entered_code",
           "branches": [
-            { "when": { "key": "local.entered_code", "eq": "58874645" }, "target": "bunker_aperto" },
+            { "when": { "var": "local.entered_code", "op": "eq", "value": "58874645" }, "target": "bunker_aperto" },
             { "default": true, "target": "codice_errato" }
           ]
         }
@@ -478,10 +478,17 @@ Reset always restores `default_value` from the row. Since `default_value` is mir
 
 Conditions are structured JSON, not expression strings. Operators:
 
-- Leaf predicate: `{ "key": "scope.var", "eq": value }` (also `neq`, `gt`, `lt`, `gte`, `lte`, `in`)
-- Combinator: `{ "and": [predicate, ...] }` and `{ "or": [predicate, ...] }`
+- Leaf predicate: `{ "var": "scope.var", "op": "eq", "value": value }` — `op` is one of
+  `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, `in`. The operator is always the **value** of the
+  `op` field, never a property name.
+- Combinator: `{ "and": [predicate, ...] }`, `{ "or": [predicate, ...] }`, `{ "not": predicate }`.
 - Nesting is permitted.
 - `{ "default": true }` marks the fallback variant when no other variant matches.
+
+> **Conditions read via `var`; mutations write via `key`.** A `when` predicate references a
+> variable with `var` and compares with a comparison `op` (`eq`/`gte`/…). A mutation
+> (`on_enter`, choice `set`) references with `key` and acts with an action `op`
+> (`set`/`increment`/`toggle`). See the authoring guide §6.1 for the full contrast.
 
 ---
 

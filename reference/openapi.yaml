@@ -26,6 +26,7 @@ tags:
   - name: Campaign Configuration
   - name: Terminals
   - name: Terminal State
+  - name: State Schema Admin
   - name: Characters
   - name: Health
 
@@ -114,6 +115,87 @@ components:
       example:
         omega_activated: false
         counter: 5
+
+    # ─── State Schema Admin ───────────────────────────────────────────────────────
+    StateEntryShape:
+      type: object
+      required: [type, default]
+      properties:
+        type:
+          $ref: '#/components/schemas/StateVarType'
+        default:
+          description: Default value; must match type (and be in values for enum)
+        values:
+          type: array
+          items:
+            type: string
+          description: Required and non-empty when type is "enum"; ignored otherwise
+
+    StateSchemaOp:
+      type: object
+      required: [action, name]
+      properties:
+        action:
+          type: string
+          enum: [add, update, delete]
+        name:
+          type: string
+          description: Current variable name
+        rename:
+          type: string
+          description: New name for the variable (update only, triggers rename)
+        entry:
+          $ref: '#/components/schemas/StateEntryShape'
+          description: Required for add/update
+        value:
+          description: Initial/new value; defaults to entry.default when omitted
+      example:
+        action: update
+        name: mode
+        rename: phase
+        entry:
+          type: enum
+          values: [idle, active]
+          default: idle
+
+    StateSchemaPatchRequest:
+      type: object
+      required: [ops]
+      properties:
+        ops:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/StateSchemaOp'
+
+    StateSchemaConflictItem:
+      type: object
+      required: [variable, referencedBy]
+      properties:
+        variable:
+          type: string
+        referencedBy:
+          type: array
+          items:
+            type: object
+            required: [id, title]
+            properties:
+              id:
+                $ref: '#/components/schemas/ObjectId'
+              title:
+                type: string
+
+    StateSchemaConflictResponse:
+      type: object
+      required: [error, conflicts]
+      properties:
+        error:
+          type: string
+          example: Cannot delete referenced variables
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/StateSchemaConflictItem'
 
     StateMutation:
       type: object
@@ -1204,6 +1286,74 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # ─── Campaign State Schema Admin ─────────────────────────────────────────────
+  /campaigns/{id}/state/schema:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [State Schema Admin]
+      summary: Add/update/delete campaign global state schema variables (admin)
+      description: |
+        Applies a list of schema operations (`add`, `update`, `delete`) to the campaign's
+        `state` map in a single request.
+
+        **Cross-reference protection:** Deleting a variable referenced by any terminal at
+        `content.state.global.<name>` is rejected (409). Renaming a referenced variable
+        rewrites all referencing terminals via `$rename` before the campaign write
+        (terminals first, campaign last).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateSchemaPatchRequest'
+            example:
+              ops:
+                - action: add
+                  name: siteOpen
+                  entry:
+                    type: boolean
+                    default: false
+                - action: update
+                  name: mode
+                  rename: phase
+                  entry:
+                    type: enum
+                    values: [idle, active]
+                    default: idle
+                - action: delete
+                  name: legacy
+      responses:
+        '200':
+          description: Schema patched; returns flat post-update state snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    $ref: '#/components/schemas/FlatState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Delete references a terminal, or rename collision on a terminal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSchemaConflictResponse'
+
   # ─── Campaign Configuration ───────────────────────────────────────────────────
   /campaigns/{id}/configuration:
     parameters:
@@ -1652,6 +1802,63 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  # ─── Terminal State Schema Admin ──────────────────────────────────────────────
+  /terminals/{id}/state/schema:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ObjectId'
+    patch:
+      tags: [State Schema Admin]
+      summary: Add/update/delete terminal local state schema variables (admin)
+      description: |
+        Applies a list of schema operations (`add`, `update`, `delete`) to the terminal's
+        `state` map in a single atomic document update. No cross-reference scan is performed
+        (terminals never reference each other's local variables).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateSchemaPatchRequest'
+            example:
+              ops:
+                - action: add
+                  name: alarm
+                  entry:
+                    type: boolean
+                    default: false
+                - action: delete
+                  name: obsolete
+      responses:
+        '200':
+          description: Schema patched; returns flat post-update state snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    $ref: '#/components/schemas/FlatState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Rename target already exists in current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ─── Characters ───────────────────────────────────────────────────────────────
   /campaigns/{campaignId}/characters:

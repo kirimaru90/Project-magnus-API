@@ -5,17 +5,24 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Put,
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { TerminalsService } from './terminals.service';
 import { StateService } from '../state/state.service';
 import { TerminalContentDto } from './dto/terminal-content.dto';
 import { FictionalLoginDto } from './dto/fictional-login.dto';
 import { MutateStateDto } from '../state/dto/mutation.dto';
+import { StateSchemaPatchDto } from '../state/dto/schema-patch.dto';
 import { JwtOptionalGuard } from '../common/guards/jwt-optional.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
 import { CampaignAccessGuard } from '../common/guards/campaign-access.guard';
@@ -163,5 +170,25 @@ export class TerminalsController {
   @ApiOperation({ summary: 'Reset single terminal state variable (admin)' })
   resetStateKey(@Param('id') id: string, @Param('key') key: string) {
     return this.stateService.resetTerminalStateKey(id, key);
+  }
+
+  @Patch('terminals/:id/state/schema')
+  @HttpCode(200)
+  @UseGuards(JwtOptionalGuard, AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Add/update/delete terminal state schema variables (admin)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Schema patched; returns flat state snapshot',
+  })
+  @ApiResponse({ status: 400, description: 'Validation error or empty ops' })
+  @ApiResponse({ status: 401, description: 'Unauthenticated' })
+  @ApiResponse({ status: 403, description: 'Forbidden — admin required' })
+  @ApiResponse({ status: 404, description: 'Terminal or variable not found' })
+  @ApiResponse({ status: 409, description: 'Rename target collision' })
+  patchSchema(@Param('id') id: string, @Body() dto: StateSchemaPatchDto) {
+    return this.stateService.patchTerminalSchema(id, dto.ops);
   }
 }

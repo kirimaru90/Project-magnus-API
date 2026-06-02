@@ -90,7 +90,7 @@ describe('TerminalsModule (e2e)', () => {
     await stopMongoMemoryServer();
   });
 
-  it('create strips login.users from stored content', async () => {
+  it('create persists fictional users and strips passwords from stored content', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/campaigns/${campaignId}/terminals`,
@@ -113,9 +113,12 @@ describe('TerminalsModule (e2e)', () => {
     });
     const body = JSON.parse(detail.body);
     const loginUsers = (
-      body.content?.login as { users?: unknown[] } | undefined
+      body.content?.login as { users?: { password?: unknown }[] } | undefined
     )?.users;
-    expect(!loginUsers || loginUsers.length === 0).toBe(true);
+    // usernames are present (for frontend dropdown), but no password field
+    expect(loginUsers).toBeDefined();
+    expect(loginUsers!.length).toBeGreaterThan(0);
+    expect(loginUsers!.every((u) => u.password === undefined)).toBe(true);
   });
 
   it('load excludes fictional credentials', async () => {
@@ -660,6 +663,180 @@ describe('TerminalsModule (e2e)', () => {
         payload: withInvalidType,
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('node graph integrity validation', () => {
+    const validNodes = {
+      start: { text: 'Hello', choices: [{ text: 'Go', target: 'end' }] },
+      end: { text: 'Bye', choices: [] },
+    };
+
+    const danglingChoiceNodes = {
+      start: {
+        text: 'Hello',
+        choices: [{ text: 'Go', target: 'missing_node' }],
+      },
+    };
+
+    const danglingVariantChoiceNodes = {
+      start: {
+        text: 'Hello',
+        variants: [{ choices: [{ text: 'Option', target: 'ghost_node' }] }],
+      },
+    };
+
+    it('3.1 POST with dangling choices[].target → 400 naming the target', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: { title: 'Bad Graph' },
+          nodes: danglingChoiceNodes,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toContain('missing_node');
+    });
+
+    it('3.2 POST with dangling variants[].choices[].target → 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: { title: 'Bad Variant Graph' },
+          nodes: danglingVariantChoiceNodes,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toContain('ghost_node');
+    });
+
+    it('3.3 POST with all targets valid → 201 (regression guard)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: { meta: { title: 'Valid Graph' }, nodes: validNodes },
+      });
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('3.3b PUT with dangling target → 400', async () => {
+      const cr = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: { meta: { title: 'Valid Graph for PUT' }, nodes: validNodes },
+      });
+      const { id } = JSON.parse(cr.body);
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: `/terminals/${id}`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: { title: 'Updated Bad Graph' },
+          nodes: danglingChoiceNodes,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toContain('missing_node');
+    });
+  });
+
+  describe('login block contract on load', () => {
+    it('3.4 load terminal with fictional users → content.login.users has {username} objects, no password', async () => {
+      const cr = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: { title: 'Login Terminal', public: true },
+          login: {
+            users: [
+              { username: 'alice', password: 'secret1' },
+              { username: 'bob', password: 'secret2' },
+            ],
+          },
+          nodes: {},
+        },
+      });
+      const { id } = JSON.parse(cr.body);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/terminals/${id}/load`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      const loginUsers = body.content?.login?.users as
+        | { username?: string; password?: unknown }[]
+        | undefined;
+      expect(loginUsers).toBeDefined();
+      expect(loginUsers!.length).toBe(2);
+      expect(loginUsers!.map((u) => u.username).sort()).toEqual([
+        'alice',
+        'bob',
+      ]);
+      expect(loginUsers!.every((u) => u.password === undefined)).toBe(true);
+    });
+
+    it('3.5 load terminal with no fictional users → no login key in content', async () => {
+      const cr = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: { title: 'No Login Terminal', public: true },
+          nodes: {},
+        },
+      });
+      const { id } = JSON.parse(cr.body);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/terminals/${id}/load`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.content).not.toHaveProperty('login');
+    });
+
+    it('3.6 by-hidden-id for terminal with fictional users → same login.users contract', async () => {
+      const cr = await app.inject({
+        method: 'POST',
+        url: `/campaigns/${campaignId}/terminals`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+        payload: {
+          meta: {
+            title: 'Hidden Login Terminal',
+            hiddenId: 'login-slug',
+            public: false,
+          },
+          login: { users: [{ username: 'carol', password: 'pw' }] },
+          nodes: {},
+        },
+      });
+      expect(cr.statusCode).toBe(201);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/campaigns/${campaignId}/terminals/by-hidden-id/login-slug`,
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      const loginUsers = body.content?.login?.users as
+        | { username?: string; password?: unknown }[]
+        | undefined;
+      expect(loginUsers).toBeDefined();
+      expect(loginUsers![0].username).toBe('carol');
+      expect(loginUsers![0].password).toBeUndefined();
     });
   });
 

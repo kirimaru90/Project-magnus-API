@@ -1,6 +1,6 @@
 ---
-version: 1.1
-date: 2026-05-22
+version: 1.2
+date: 2026-06-02
 ---
 
 # How to Write a Terminal JSON File
@@ -336,6 +336,31 @@ Operators: `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, `in`.
 `not` is true iff the child condition is false.
 
 **Fallback marker** (for variants / branches only): `{ "default": true }`.
+
+### 6.1 Conditions vs. mutations — `var` vs `key`
+
+Two similar-looking shapes are **not** interchangeable. The common mistake is using
+`key` (or putting the operator name where the value goes) inside a `when`. Use this table:
+
+| Purpose | Where it appears                          | Variable field | Shape                                                          |
+| ------- | ----------------------------------------- | -------------- | ------------------------------------------------------------- |
+| **READ** a variable (condition) | variant `when`, choice `when`, input branch `when` | `var`  | `{ "var": "local.x", "op": "gte", "value": 3 }`               |
+| **WRITE** a variable (mutation) | `on_enter`, choice `set`                  | `key`          | `{ "key": "local.x", "op": "set", "value": 3 }`               |
+
+Both use `op` and `value`, but **conditions read via `var`, mutations write via `key`.**
+The condition `op` is a comparison (`eq`/`neq`/`gt`/`gte`/`lt`/`lte`/`in`); the mutation
+`op` is an action (`set`/`increment`/`toggle`). The operator is always the **value** of
+the `op` field — never a property name. Wrong:
+
+```json
+{ "key": "local.x", "gte": 3 }          // ❌ key in a condition; gte as a property
+```
+
+Right:
+
+```json
+{ "var": "local.x", "op": "gte", "value": 3 }   // ✅ condition
+```
 
 ---
 
