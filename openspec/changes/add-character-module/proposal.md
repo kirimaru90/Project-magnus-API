@@ -26,6 +26,6 @@ The MAGNUS API powers a Pip-Boy-style TTRPG webapp. Players need a character she
 
 - New NestJS module: `CharactersModule` registered in `AppModule`
 - New Mongoose schema: `Character` with embedded sub-documents; collection elements (conditions, perks, inventory items) carry a persisted `id` (nanoid), skills carry a catalog-slug `id`
-- New route group: `GET|POST /campaigns/:cid/characters`, `GET|PUT|DELETE /campaigns/:cid/characters/:id`, plus 7 section `PATCH` routes (each returning only the mutated section)
+- New route group: `GET|POST /campaigns/:cid/characters`, `GET|PUT|DELETE /campaigns/:cid/characters/:id`, plus 7 section `PATCH` routes (each returning an envelope `{ section, ignored }` — the mutated section plus a list of any inputs the server dropped)
 - Access control: players access own characters only; admins access all characters within a campaign they manage. A field-level whitelist further restricts which sections/fields non-admins may write
 - No breaking changes to existing endpoints

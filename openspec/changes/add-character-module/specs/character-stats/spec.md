@@ -7,15 +7,15 @@ Each attribute (strength, perception, endurance, charisma, intelligence, agility
 
 #### Scenario: Admin updates a subset of attributes
 - **WHEN** an admin PATCHes `{ "strength": 4, "luck": 2 }`
-- **THEN** only `strength` and `luck` SHALL change, the other five SHALL be unchanged, and HTTP 200 SHALL be returned with the updated `special` object
+- **THEN** only `strength` and `luck` SHALL change, the other five SHALL be unchanged, and HTTP 200 SHALL be returned with the updated `special` object as the response `section`
 
 #### Scenario: Value out of range
 - **WHEN** any provided attribute is below 1 or above 5
 - **THEN** the system SHALL return HTTP 400
 
-#### Scenario: Player write is silently ignored
+#### Scenario: Player write is ignored and reported
 - **WHEN** a player (owner, non-admin) PATCHes any SPECIAL attribute
-- **THEN** no attribute SHALL change and HTTP 200 SHALL be returned with the unchanged `special` object
+- **THEN** no attribute SHALL change, HTTP 200 SHALL be returned with the unchanged `special` object as the response `section`, and the `ignored` array SHALL report the `special` section as `disallowed_section`
 
 ### Requirement: Patch skills
 The system SHALL expose `PATCH /campaigns/:cid/characters/:id/skills`. Skills are keyed by a caller-supplied catalog slug (`id`); ids are never server-minted.
@@ -52,15 +52,15 @@ Skills are **admin-only**.
 - **WHEN** an item has a `level` not in the allowed enum
 - **THEN** the system SHALL return HTTP 400
 
-#### Scenario: Player write is silently ignored
+#### Scenario: Player write is ignored and reported
 - **WHEN** a player PATCHes skills
-- **THEN** no skill SHALL change and HTTP 200 returned with the unchanged skills array
+- **THEN** no skill SHALL change, HTTP 200 returned with the unchanged skills array as the response `section`, and the `ignored` array SHALL report the `skills` section as `disallowed_section`
 
 ### Requirement: Patch perks
 The system SHALL expose `PATCH /campaigns/:cid/characters/:id/perks`. Perks are a collection with server-minted nanoid ids.
 
 The body MAY contain:
-- `items`: an item with `id` updates the matching perk (unknown id silently skipped); an item without `id` creates a perk and the server assigns a nanoid
+- `items`: an item with `id` updates the matching perk (unknown id is not applied and is reported in the response `ignored` array with reason `unknown_id`); an item without `id` creates a perk and the server assigns a nanoid
 - `deletedIds`: array of ids to remove
 
 Each perk SHALL have `name` (required) and MAY have `description` and `icon`. Perks are **admin-only**.
@@ -73,17 +73,17 @@ Each perk SHALL have `name` (required) and MAY have `description` and `icon`. Pe
 - **WHEN** an admin PATCHes `{ "items": [ { "id": "a1b2c3d4", "description": "..." } ] }` for an existing perk id
 - **THEN** that perk SHALL be merged and HTTP 200 returned
 
-#### Scenario: Unknown perk id is skipped
+#### Scenario: Unknown perk id is skipped and reported
 - **WHEN** an item references an `id` not present on the character
-- **THEN** that item SHALL be silently ignored (no error) and HTTP 200 returned
+- **THEN** that item SHALL NOT be applied, the response `ignored` array SHALL contain an entry naming the perks section and that id with reason `unknown_id`, and HTTP 200 SHALL be returned
 
 #### Scenario: Created perk missing name
 - **WHEN** an id-less perk item omits `name`
 - **THEN** the system SHALL return HTTP 400
 
-#### Scenario: Player write is silently ignored
+#### Scenario: Player write is ignored and reported
 - **WHEN** a player PATCHes perks
-- **THEN** no perk SHALL change and HTTP 200 returned
+- **THEN** no perk SHALL change, HTTP 200 returned with the unchanged perks array as the response `section`, and the `ignored` array SHALL report the `perks` section as `disallowed_section`
 
 ### Requirement: Patch status
 The system SHALL expose `PATCH /campaigns/:cid/characters/:id/status`. Status comprises two nanoid condition collections plus a scalar.
@@ -141,12 +141,18 @@ Players MAY write only `paCurrent`; `paMax` and `paTrackedBy` are admin-only (a 
 - **WHEN** `paTrackedBy` is provided and not `agility` or `endurance`
 - **THEN** the system SHALL return HTTP 400
 
-### Requirement: Section endpoints return the mutated section
-Every section PATCH endpoint SHALL respond with only the mutated section value (e.g. the `special` object, the `skills` array, the `status` object), not the full character document.
+### Requirement: Section endpoints return the mutated section and an ignored list
+Every section PATCH endpoint SHALL respond with an envelope `{ section, ignored }`. The `section` value SHALL be only the mutated section (e.g. the `special` object, the `skills` array, the `status` object), never the full character document. The `ignored` value SHALL be an array listing every input the server dropped while partially applying the request; each entry SHALL identify the section, the offending field key or element id, and a reason code — one of `unauthorized_field`, `unknown_id`, or `disallowed_section`. When nothing was dropped, `ignored` SHALL be an empty array.
 
-#### Scenario: Response contains only the section
+When a field is dropped with reason `unauthorized_field`, the returned `section` SHALL reflect the unchanged persisted value of that field, not the rejected input.
+
+#### Scenario: Response contains the section and an ignored array
 - **WHEN** any section PATCH succeeds
-- **THEN** the response body SHALL be the updated section value with HTTP 200
+- **THEN** the response body SHALL be `{ section, ignored }` with HTTP 200, where `section` is the updated section value and `ignored` lists every dropped field or id (an empty array when nothing was dropped)
+
+#### Scenario: Unauthorized field is reported and reflected unchanged
+- **WHEN** a non-admin PATCHes a section including a field they are not permitted to write
+- **THEN** the returned `section` SHALL show that field's unchanged persisted value, `ignored` SHALL contain an entry naming that section and field with reason `unauthorized_field`, and HTTP 200 SHALL be returned
 
 ### Requirement: Section endpoints enforce ownership
 All section PATCH endpoints SHALL enforce the same ownership rules as the full character endpoints: players may only patch their own characters; admins may patch any character in the campaign. Field-level authorization (which sections/fields a non-admin may actually write) is applied after ownership, silently discarding unauthorized keys.

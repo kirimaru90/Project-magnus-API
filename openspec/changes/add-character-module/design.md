@@ -86,9 +86,23 @@ PATCH /…/inventory
 }
 ```
 
-A shared `patchCollectionArray(existing, items, deletedIds)` helper drives families (b) and (c); skills override the "id-less → create" and "unknown id → skip" rules per (b). Inventory ids must be unique across all four item arrays.
+A shared `patchCollectionArray(existing, items, deletedIds, options)` helper drives families (b) and (c). The id-less and unknown-id policies are **explicit options**, not a special-case branch keyed on "is this skills":
 
-**Response shape:** each section PATCH returns **only the mutated section object** (e.g. the `inventory` object), not the whole character — so the client can directly observe which fields/ids were ignored or skipped.
+```
+patchCollectionArray(existing, items, deletedIds, {
+  onIdless:    'create' | 'reject400',   // id-less item → mint nanoid & insert, or HTTP 400
+  onUnknownId: 'skip'   | 'insert',      // id present but not found → drop it, or insert as-is
+})
+```
+
+- **nanoid collections (family c)** — perks, conditions, inventory — pass `{ onIdless: 'create', onUnknownId: 'skip' }`.
+- **skills (family b)** — pass `{ onIdless: 'reject400', onUnknownId: 'insert' }` (a slug must be supplied, and an unknown slug means "attach this catalog skill").
+
+Putting the policy in the signature keeps the contract in the design rather than buried in an `if (section === 'skills')` branch.
+
+On inventory create (`onIdless: 'create'`), after `nanoid(8)` mints an id the service checks it against **all four** item arrays (weapons, equip, consumables, other) — already in hand from the read-modify-write cycle — and regenerates on collision, so ids are unique across the whole inventory, not merely within the one array being patched.
+
+**Response shape:** each section PATCH returns an envelope `{ section: <mutated section object>, ignored: [...] }` — the mutated section (e.g. the `inventory` object), **not** the whole character, plus an `ignored` array enumerating everything the server dropped during partial-apply. Each `ignored` entry carries the `section`, the offending `key` or `id`, and a `reason` code (`unauthorized_field`, `unknown_id`, `disallowed_section`). This keeps the uniform partial-apply contract (nothing becomes a 400) while making silent purge (Decision 7) and silent skip (Decision 8) diagnosable — the client no longer has to diff returned state against what it sent.
 
 **Why id-based PATCH over full-array PUT:** the frontend can push a single changed element without resending the whole array — avoiding lost-update races between concurrent editors and cutting bandwidth on large inventories. An explicit `deletedIds` keeps removals unambiguous now that absence no longer implies deletion.
 
@@ -137,22 +151,40 @@ For collection sections marked "full" (status, inventory) the whitelist value is
 
 **Why:** SPECIAL allocation, skill progression, perk grants, and the bobblehead/cap economy are GM-controlled; live-session state (AP spent, caps/scraps spent, conditions, loot) is the player's to manage. Silent purge rather than 403 keeps the contract uniform with the silently-skipped-id behaviour and lets a single PATCH partially apply.
 
+#### 7a. Silent drops are observable via an `ignored` array
+
+Silent purge (this decision) and silent skip (Decision 8) keep the partial-apply contract uniform, but invisibility is a liability — a client cannot tell a dropped field from one that round-tripped unchanged. So every section PATCH response carries an `ignored` array alongside the mutated section (see Decision 3 response shape). Each entry identifies:
+
+- `section` — the section the drop occurred in
+- `key` **or** `id` — the offending field name (a purged field) or element id (a skipped/unknown id)
+Each entry carries exactly one of key or id: key for a field-level drop (a purged field in a partial-merge or whitelisted section), id for an element-level drop (a skipped or unknown id in a nanoid collection). The disallowed_section case carries neither — only section and reason — since the whole section was denied. Entries never carry both.
+- `reason` — one of:
+  - `unauthorized_field` — a non-admin wrote a field not in `PLAYER_UPDATABLE_FIELDS`
+  - `unknown_id` — a nanoid-collection update referenced an `id` not on the character
+  - disallowed_section — a non-admin issued a PATCH against an admin-only section endpoint (special, skills, perks) as a whole
+
+When a non-admin PATCHes an admin-only section, the entire payload is purged: the endpoint still returns 200 with the section unmutated (reflecting current persisted state) and a single ignored entry { section, reason: "disallowed_section" } with no key or id — the denial is wholesale, not field-by-field, so individual fields are not enumerated. This is the one case where a successful (200) write deliberately accomplishes nothing; it is intentional, preserving the uniform partial-apply contract rather than introducing a 403 for this section alone.
+
+Nothing becomes a 400 — the contract stays partial-apply — but the client can now see exactly what the server discarded without diffing returned state.
+
+**Purged-field reflection:** when a non-admin field is purged, the returned `section` reflects the **unchanged persisted value** of that field, not the rejected input. The flow is load → scrub the payload → mutate-in-memory → save, so the rejected field is never applied and the saved-and-returned section is the true persisted state. Example: a non-admin PATCHing `resources` with a `bobbleheads` value gets back a `resources` section showing the *original* `bobbleheads` count, plus an `ignored` entry `{ section: "resources", key: "bobbleheads", reason: "unauthorized_field" }`. This closes the loop with the load-mutate-save cycle.
+
 ### 8. Validation model under PATCH
 
 Partial updates change what counts as an error:
 - **Missing fields are NOT errors** — partial-merge sections accept any subset; the old "missing attribute → 400" no longer applies.
 - **Bad values ARE errors** — out-of-range SPECIAL (1–5), negative counters, invalid enums (`severity`, `level`, `paTrackedBy`, tag `type`), and a missing required `name` on a *created* item still return **HTTP 400**.
-- **Unauthorized / unknown keys → silent purge** (per Decision 7), not 400.
-- **Unknown update ids → silently skipped** for nanoid collections; for skills an unknown slug is an **insert**, not a skip (per Decision 3b).
+- **Unauthorized / unknown keys → silent purge** (per Decision 7), not 400 — and reported in the response `ignored` array (Decision 7a).
+- **Unknown update ids → silently skipped** for nanoid collections, reported via `ignored` (Decision 7a); for skills an unknown slug is an **insert**, not a skip (per Decision 3b).
 
 This supersedes the "missing → 400" scenarios currently written in the section specs.
 
 ## Risks / Trade-offs
 
 - **PATCH diff complexity**: id-based merge (upsert by id, create on id-less, remove via `deletedIds`) is more logic than a full-array `$set`, and shifts the burden of tracking ids onto the frontend. Accepted in exchange for incremental writes and race-safety on concurrent edits.
-- **nanoid uniqueness is probabilistic**: inventory ids must be unique across all four arrays, but `patchCollectionArray` runs per-array and only trusts `nanoid(8)`'s collision-resistance — uniqueness is not enforced. Acceptable at expected scale; add a cross-array check on create if collisions ever matter.
+- **nanoid uniqueness is enforced on create**: inventory ids must be unique across all four arrays, and this is now guaranteed rather than left to probability. On create, after `nanoid(8)` mints an id the service checks it against all four item arrays already loaded in the read-modify-write cycle and regenerates on collision — so cross-array uniqueness holds regardless of `nanoid(8)`'s collision-resistance, at negligible cost since the arrays are already in memory.
 - **Read-modify-write window**: returning the mutated section implies load → mutate-in-memory → save, which reintroduces a server-side lost-update window that atomic array operators (`$[elem]` / `arrayFilters`) would avoid. Accepted given low write-concurrency per character.
-- **Silent purge is invisible**: a non-admin writing to an admin-only field gets no 403 — the field simply vanishes. Clients must diff the returned section to notice. Transparency traded for a uniform partial-apply contract.
+- **Silent purge is observable, not invisible** (mitigated): a non-admin writing to an admin-only field still gets no 403, but the response's `ignored` array names the dropped field with a `reason` code and the returned section reflects the unchanged persisted value (Decision 7a). Clients no longer have to diff returned state to notice a drop — the uniform partial-apply contract is preserved while the visibility risk is mitigated, not merely accepted.
 - **No uniqueness constraint on characters**: Multiple characters per player per campaign is intentional; no DB-level unique index on `(campaignId, userId)`.
 - **Soft-delete invisible to API**: There is no admin endpoint to list or restore soft-deleted characters. If needed later, an admin-only `?includeDeleted=true` query param can be added.
 

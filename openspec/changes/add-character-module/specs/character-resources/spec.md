@@ -12,11 +12,11 @@ Players MAY write only `caps` and `scraps`; `bobbleheads` is admin-only (a playe
 
 #### Scenario: Player updates caps and scraps
 - **WHEN** a player (owner) PATCHes `{ "caps": 120, "scraps": 8 }`
-- **THEN** `caps` and `scraps` SHALL be updated, `bobbleheads` SHALL be unchanged, and HTTP 200 returned with the updated `resources` object
+- **THEN** `caps` and `scraps` SHALL be updated, `bobbleheads` SHALL be unchanged, and HTTP 200 returned with the updated `resources` object as the response `section`
 
-#### Scenario: Player write to bobbleheads is ignored
+#### Scenario: Player write to bobbleheads is ignored and reported
 - **WHEN** a player PATCHes `{ "bobbleheads": 5, "caps": 10 }`
-- **THEN** `caps` SHALL change to 10, `bobbleheads` SHALL be unchanged, and HTTP 200 returned
+- **THEN** `caps` SHALL change to 10, `bobbleheads` SHALL be unchanged, the returned `section` SHALL show the original `bobbleheads` count, and the `ignored` array SHALL contain an entry identifying the `resources` section and the `bobbleheads` field with reason `unauthorized_field`, with HTTP 200 returned
 
 #### Scenario: Admin updates bobbleheads
 - **WHEN** an admin PATCHes `{ "bobbleheads": 5 }`
