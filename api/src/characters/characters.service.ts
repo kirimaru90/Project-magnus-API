@@ -14,9 +14,9 @@ import {
 import { AuthenticatedUser } from '../auth/jwt.strategy';
 import {
   Identified,
+  IgnoredEntry,
   PatchItem,
   patchCollectionArray,
-  patchSlugCollection,
   scrubPayload,
 } from './patch-utils';
 import { CreateCharacterDto } from './dto/create-character.dto';
@@ -192,7 +192,7 @@ export class CharactersService {
     return toResponse(updated!);
   }
 
-  // --- Section patches (each returns only the mutated section) ---
+  // --- Section patches (each returns { section, ignored }) ---
 
   async patchSpecial(
     campaignId: string,
@@ -201,10 +201,10 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('special', { ...dto }, actor);
+    const { scrubbed, ignored } = scrubPayload('special', { ...dto }, actor);
     const special = { ...existing.special, ...scrubbed };
     const updated = await this.persist(existing._id, { special });
-    return updated.special;
+    return { section: updated.special, ignored };
   }
 
   async patchSkills(
@@ -214,14 +214,15 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('skills', { ...dto }, actor);
-    const skills = patchSlugCollection(
+    const { scrubbed, ignored } = scrubPayload('skills', { ...dto }, actor);
+    const { result: skills } = patchCollectionArray(
       existing.skills ?? [],
       scrubbed.items,
       scrubbed.deletedIds,
+      { onIdless: 'reject400', onUnknownId: 'insert' },
     );
     const updated = await this.persist(existing._id, { skills });
-    return updated.skills;
+    return { section: updated.skills, ignored };
   }
 
   async patchPerks(
@@ -231,14 +232,25 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('perks', { ...dto }, actor);
-    const perks = patchCollectionArray(
+    const { scrubbed, ignored: scrubIgnored } = scrubPayload(
+      'perks',
+      { ...dto },
+      actor,
+    );
+    const { result: perks, unknownIds } = patchCollectionArray(
       existing.perks ?? [],
       scrubbed.items,
       scrubbed.deletedIds,
+      { onIdless: 'create', onUnknownId: 'skip' },
     );
     const updated = await this.persist(existing._id, { perks });
-    return updated.perks;
+    const ignored: IgnoredEntry[] = [
+      ...scrubIgnored,
+      ...unknownIds.map(
+        (id): IgnoredEntry => ({ section: 'perks', id, reason: 'unknown_id' }),
+      ),
+    ];
+    return { section: updated.perks, ignored };
   }
 
   async patchStatus(
@@ -248,30 +260,48 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('status', { ...dto }, actor);
+    const { scrubbed, ignored: scrubIgnored } = scrubPayload(
+      'status',
+      { ...dto },
+      actor,
+    );
+    const ignored: IgnoredEntry[] = [...scrubIgnored];
 
     const set: Record<string, unknown> = {};
-    if (scrubbed.positiveConditions)
-      set.positiveConditions = patchCollectionArray(
+    if (scrubbed.positiveConditions) {
+      const { result, unknownIds } = patchCollectionArray(
         existing.positiveConditions ?? [],
         scrubbed.positiveConditions.items,
         scrubbed.positiveConditions.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip' },
       );
-    if (scrubbed.negativeConditions)
-      set.negativeConditions = patchCollectionArray(
+      set.positiveConditions = result;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'status', id, reason: 'unknown_id' }),
+      );
+    }
+    if (scrubbed.negativeConditions) {
+      const { result, unknownIds } = patchCollectionArray(
         existing.negativeConditions ?? [],
         scrubbed.negativeConditions.items,
         scrubbed.negativeConditions.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip' },
       );
+      set.negativeConditions = result;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'status', id, reason: 'unknown_id' }),
+      );
+    }
     if (scrubbed.criticalState !== undefined)
       set.criticalState = scrubbed.criticalState;
 
     const updated = await this.persist(existing._id, set);
-    return {
+    const section = {
       positiveConditions: updated.positiveConditions ?? [],
       negativeConditions: updated.negativeConditions ?? [],
       criticalState: updated.criticalState ?? false,
     };
+    return { section, ignored };
   }
 
   async patchActionPoints(
@@ -281,7 +311,11 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('actionPoints', { ...dto }, actor);
+    const { scrubbed, ignored } = scrubPayload(
+      'actionPoints',
+      { ...dto },
+      actor,
+    );
 
     const set: Record<string, unknown> = {};
     if (scrubbed.paMax !== undefined) set.paMax = scrubbed.paMax;
@@ -290,11 +324,12 @@ export class CharactersService {
       set.paTrackedBy = scrubbed.paTrackedBy;
 
     const updated = await this.persist(existing._id, set);
-    return {
+    const section = {
       paMax: updated.paMax,
       paCurrent: updated.paCurrent,
       paTrackedBy: updated.paTrackedBy,
     };
+    return { section, ignored };
   }
 
   async patchInventory(
@@ -304,41 +339,80 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('inventory', { ...dto }, actor);
+    const { scrubbed, ignored: scrubIgnored } = scrubPayload(
+      'inventory',
+      { ...dto },
+      actor,
+    );
+    const ignored: IgnoredEntry[] = [...scrubIgnored];
+
+    // Build cross-array id pool so minted ids are unique across all four arrays.
+    const inv = existing.inventory;
+    const idPool = new Set<string>([
+      ...(inv.weapons ?? []).map((i) => i.id),
+      ...(inv.equip ?? []).map((i) => i.id),
+      ...(inv.consumables ?? []).map((i) => i.id),
+      ...(inv.other ?? []).map((i) => i.id),
+    ]);
 
     const inventory = {
-      weapons: existing.inventory.weapons ?? [],
-      equip: existing.inventory.equip ?? [],
-      consumables: existing.inventory.consumables ?? [],
-      other: existing.inventory.other ?? [],
+      weapons: inv.weapons ?? [],
+      equip: inv.equip ?? [],
+      consumables: inv.consumables ?? [],
+      other: inv.other ?? [],
     };
-    if (scrubbed.weapons)
-      inventory.weapons = patchCollectionArray(
+
+    if (scrubbed.weapons) {
+      const { result, unknownIds } = patchCollectionArray(
         inventory.weapons,
         scrubbed.weapons.items,
         scrubbed.weapons.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip', idPool },
       );
-    if (scrubbed.equip)
-      inventory.equip = patchCollectionArray(
+      inventory.weapons = result as typeof inventory.weapons;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'inventory', id, reason: 'unknown_id' }),
+      );
+    }
+    if (scrubbed.equip) {
+      const { result, unknownIds } = patchCollectionArray(
         inventory.equip,
         scrubbed.equip.items,
         scrubbed.equip.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip', idPool },
       );
-    if (scrubbed.consumables)
-      inventory.consumables = patchCollectionArray(
+      inventory.equip = result as typeof inventory.equip;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'inventory', id, reason: 'unknown_id' }),
+      );
+    }
+    if (scrubbed.consumables) {
+      const { result, unknownIds } = patchCollectionArray(
         inventory.consumables,
         scrubbed.consumables.items,
         scrubbed.consumables.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip', idPool },
       );
-    if (scrubbed.other)
-      inventory.other = patchCollectionArray(
+      inventory.consumables = result as typeof inventory.consumables;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'inventory', id, reason: 'unknown_id' }),
+      );
+    }
+    if (scrubbed.other) {
+      const { result, unknownIds } = patchCollectionArray(
         inventory.other,
         scrubbed.other.items,
         scrubbed.other.deletedIds,
+        { onIdless: 'create', onUnknownId: 'skip', idPool },
       );
+      inventory.other = result as typeof inventory.other;
+      unknownIds.forEach((id) =>
+        ignored.push({ section: 'inventory', id, reason: 'unknown_id' }),
+      );
+    }
 
     const updated = await this.persist(existing._id, { inventory });
-    return updated.inventory;
+    return { section: updated.inventory, ignored };
   }
 
   async patchResources(
@@ -348,10 +422,10 @@ export class CharactersService {
     actor: AuthenticatedUser,
   ) {
     const existing = await this.loadOr404(campaignId, characterId);
-    const scrubbed = scrubPayload('resources', { ...dto }, actor);
+    const { scrubbed, ignored } = scrubPayload('resources', { ...dto }, actor);
     const resources = { ...existing.resources, ...scrubbed };
     const updated = await this.persist(existing._id, { resources });
-    return updated.resources;
+    return { section: updated.resources, ignored };
   }
 
   // --- Internals ---
@@ -397,9 +471,13 @@ export class CharactersService {
         'actionPoints',
         { ...dto.actionPoints },
         actor,
-      );
+      ).scrubbed;
     if (dto.resources)
-      out.resources = scrubPayload('resources', { ...dto.resources }, actor);
+      out.resources = scrubPayload(
+        'resources',
+        { ...dto.resources },
+        actor,
+      ).scrubbed;
     if (dto.status) out.status = dto.status;
     if (dto.inventory) out.inventory = dto.inventory;
     return out;

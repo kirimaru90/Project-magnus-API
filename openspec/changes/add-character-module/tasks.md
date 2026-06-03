@@ -62,11 +62,11 @@
 
 These refine the section-PATCH behaviour above; each depends on the patch engine (§2.1–2.2) and/or the section patch methods and routes (§5.3, §6.3).
 
-- [ ] 9.1 Replace the `patchCollectionArray` signature with `patchCollectionArray(existing, items, deletedIds, { onIdless, onUnknownId })`; nanoid callers pass `{ onIdless: 'create', onUnknownId: 'skip' }`, skills pass `{ onIdless: 'reject400', onUnknownId: 'insert' }`; fold the skills-specific variant (§2.2) into this options path so there is no `is-skills` branch (depends on §2.1, §2.2)
-- [ ] 9.2 Test: `patchCollectionArray` honours both option combinations — id-less under `create` mints an id while id-less under `reject400` throws 400; unknown id under `skip` is dropped while unknown id under `insert` is added
-- [ ] 9.3 Have each section patch method collect dropped inputs and return the envelope `{ section, ignored }`, where each `ignored` entry carries `{ section, key|id, reason }` with `reason` ∈ `unauthorized_field | unknown_id | disallowed_section` (depends on §5.3, §6.3)
-- [ ] 9.4 Test: a non-admin PATCH to an admin-only field returns 200 with an `ignored` entry (`unauthorized_field`); an unknown nanoid id returns an `ignored` entry (`unknown_id`); a clean PATCH returns `ignored: []`
-- [ ] 9.5 On inventory create, after `nanoid(8)` mints an id, check it against all four item arrays (weapons, equip, consumables, other) already loaded in the read-modify-write cycle and regenerate on collision (depends on §5.3, §2.1)
-- [ ] 9.6 Test: creating items across arrays never yields a cross-array id collision (seed/force a collision and assert the id is regenerated)
-- [ ] 9.7 Ensure the scrub-then-save flow makes the returned `section` reflect the unchanged persisted value of any purged field (e.g. a non-admin `resources` PATCH returns the original `bobbleheads`) (depends on §5.3, §9.3)
-- [ ] 9.8 Test: a non-admin `resources` PATCH with `bobbleheads` returns the original `bobbleheads` in `section` plus the matching `unauthorized_field` entry in `ignored`
+- [x] 9.1 Replace the `patchCollectionArray` signature with `patchCollectionArray(existing, items, deletedIds, { onIdless, onUnknownId })`; nanoid callers pass `{ onIdless: 'create', onUnknownId: 'skip' }`, skills pass `{ onIdless: 'reject400', onUnknownId: 'insert' }`; fold the skills-specific variant (§2.2) into this options path so there is no `is-skills` branch (depends on §2.1, §2.2)
+- [x] 9.2 Test: `patchCollectionArray` honours both option combinations — id-less under `create` mints an id while id-less under `reject400` throws 400; unknown id under `skip` is dropped while unknown id under `insert` is added
+- [x] 9.3 Have each section patch method collect dropped inputs and return the envelope `{ section, ignored }`, where each `ignored` entry carries `{ section, key|id, reason }` with `reason` ∈ `unauthorized_field | unknown_id | disallowed_section` (depends on §5.3, §6.3)
+- [x] 9.4 Test: a non-admin PATCH to an admin-only field returns 200 with an `ignored` entry (`unauthorized_field`); an unknown nanoid id returns an `ignored` entry (`unknown_id`); a clean PATCH returns `ignored: []`
+- [x] 9.5 On inventory create, after `nanoid(8)` mints an id, check it against all four item arrays (weapons, equip, consumables, other) already loaded in the read-modify-write cycle and regenerate on collision (depends on §5.3, §2.1)
+- [x] 9.6 Test: creating items across arrays never yields a cross-array id collision (seed/force a collision and assert the id is regenerated)
+- [x] 9.7 Ensure the scrub-then-save flow makes the returned `section` reflect the unchanged persisted value of any purged field (e.g. a non-admin `resources` PATCH returns the original `bobbleheads`) (depends on §5.3, §9.3)
+- [x] 9.8 Test: a non-admin `resources` PATCH with `bobbleheads` returns the original `bobbleheads` in `section` plus the matching `unauthorized_field` entry in `ignored`
